@@ -1,6 +1,6 @@
 import torch
 from comfy_api.latest import ComfyExtension, io
-from .src.patch import apply_dype_to_flux
+from .src.patch_flux import apply_dype_to_flux
 
 from .src.patch_qwen import apply_dype_to_qwen
 
@@ -81,26 +81,26 @@ class DyPE_Universal(io.ComfyNode):
         """
         Clones the model, detects the model type, and applies the appropriate DyPE patch.
         """
-        # --- ACTION: This is the core dispatcher logic ---
         try:
-            # Get the class name of the core diffusion model.
             model_class_name = model.model.diffusion_model.__class__.__name__
         except Exception as e:
             raise ValueError(f"Could not identify the diffusion model class. Is this a valid ComfyUI model? Error: {e}")
 
         patched_model = None
-        if model_class_name == "FluxTransformer2DModel":
-            print(f"ComfyUI-DyPE: Detected FLUX model. Applying FLUX patch.")
+        
+        # --- THIS IS THE FIX ---
+        # We now check if the class name is IN a tuple of known FLUX names.
+        if model_class_name in ("FluxTransformer2DModel", "Flux"):
+            print(f"ComfyUI-DyPE: Detected FLUX model ('{model_class_name}'). Applying FLUX patch.")
             patched_model = apply_dype_to_flux(model, width, height, method, enable_dype, dype_exponent, base_shift, max_shift)
         
         elif model_class_name == "QwenImageTransformer2DModel":
             print(f"ComfyUI-DyPE: Detected Qwen-Image model. Applying Qwen patch.")
-            # Note: We pass only the arguments that apply_dype_to_qwen will need.
-            # Make sure your function signature in patch_qwen.py matches this.
+            # This will call your function once it's implemented. For now, it will raise the NotImplementedError.
             patched_model = apply_dype_to_qwen(model, width, height, method, enable_dype, dype_exponent)
         
         else:
-            raise TypeError(f"Unsupported model type for DyPE: '{model_class_name}'. This node currently supports 'FluxTransformer2DModel' and 'QwenImageTransformer2DModel'.")
+            raise TypeError(f"Unsupported model type for DyPE: '{model_class_name}'. This node supports 'FluxTransformer2DModel', 'Flux', and 'QwenImageTransformer2DModel'.")
 
         return io.NodeOutput(patched_model)
 
