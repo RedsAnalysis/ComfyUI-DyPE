@@ -2,9 +2,11 @@ import torch
 from comfy_api.latest import ComfyExtension, io
 from .src.patch import apply_dype_to_flux
 
-class DyPE_FLUX(io.ComfyNode):
+from .src.patch_qwen import apply_dype_to_qwen
+
+class DyPE_Universal(io.ComfyNode):
     """
-    Applies DyPE (Dynamic Position Extrapolation) to a FLUX model.
+    Applies DyPE (Dynamic Position Extrapolation) to a FLUX model or Qwen.
     This allows generating images at resolutions far beyond the model's training scale
     by dynamically adjusting positional encodings and the noise schedule.
     """
@@ -12,14 +14,14 @@ class DyPE_FLUX(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
         return io.Schema(
-            node_id="DyPE_FLUX",
-            display_name="DyPE for FLUX",
+            node_id="DyPE_Universal",
+            display_name="DyPE Patcher (Universal)",
             category="model_patches/unet",
-            description="Applies DyPE (Dynamic Position Extrapolation) to a FLUX model for ultra-high-resolution generation.",
+            description="Applies DyPE to a compatible model (FLUX, Qwen-Image) for ultra-high-resolution generation.",
             inputs=[
                 io.Model.Input(
                     "model",
-                    tooltip="The FLUX model to patch with DyPE.",
+                    tooltip="The model (FLUX or Qwen-Image) to patch with DyPE.",
                 ),
                 io.Int.Input(
                     "width",
@@ -50,23 +52,26 @@ class DyPE_FLUX(io.ComfyNode):
                     optional=True,
                     tooltip="Controls DyPE strength over time (λt). 2.0=Exponential (best for 4K+), 1.0=Linear, 0.5=Sub-linear (better for ~2K)."
                 ),
+
+                # Note: These noise schedule shifts are specific to the FLUX patch.
+                # They will be ignored by the Qwen patcher if not implemented there.
                 io.Float.Input(
                     "base_shift",
                     default=0.5, min=0.0, max=10.0, step=0.01,
                     optional=True,
-                    tooltip="Advanced: Base shift for the noise schedule (mu). Default is 0.5."
+                    tooltip="[FLUX Only] Advanced: Base shift for the noise schedule (mu). Default is 0.5."
                 ),
                 io.Float.Input(
                     "max_shift",
                     default=1.15, min=0.0, max=10.0, step=0.01,
                     optional=True,
-                    tooltip="Advanced: Max shift for the noise schedule (mu) at high resolutions. Default is 1.15."
+                    tooltip="[FLUX Only] Advanced: Max shift for the noise schedule (mu) at high resolutions. Default is 1.15."
                 ),
             ],
             outputs=[
                 io.Model.Output(
                     display_name="Patched Model",
-                    tooltip="The FLUX model patched with DyPE.",
+                    tooltip="The model patched with DyPE.",
                 ),
             ],
         )
@@ -74,19 +79,36 @@ class DyPE_FLUX(io.ComfyNode):
     @classmethod
     def execute(cls, model, width: int, height: int, method: str, enable_dype: bool, dype_exponent: float = 2.0, base_shift: float = 0.5, max_shift: float = 1.15) -> io.NodeOutput:
         """
-        Clones the model and applies the DyPE patch for both the noise schedule and positional embeddings.
+        Clones the model, detects the model type, and applies the appropriate DyPE patch.
         """
-        if not hasattr(model.model, "diffusion_model") or not hasattr(model.model.diffusion_model, "pe_embedder"):
-             raise ValueError("This node is only compatible with FLUX models.")
+        # --- ACTION: This is the core dispatcher logic ---
+        try:
+            # Get the class name of the core diffusion model.
+            model_class_name = model.model.diffusion_model.__class__.__name__
+        except Exception as e:
+            raise ValueError(f"Could not identify the diffusion model class. Is this a valid ComfyUI model? Error: {e}")
+
+        patched_model = None
+        if model_class_name == "FluxTransformer2DModel":
+            print(f"ComfyUI-DyPE: Detected FLUX model. Applying FLUX patch.")
+            patched_model = apply_dype_to_flux(model, width, height, method, enable_dype, dype_exponent, base_shift, max_shift)
         
-        patched_model = apply_dype_to_flux(model, width, height, method, enable_dype, dype_exponent, base_shift, max_shift)
+        elif model_class_name == "QwenImageTransformer2DModel":
+            print(f"ComfyUI-DyPE: Detected Qwen-Image model. Applying Qwen patch.")
+            # Note: We pass only the arguments that apply_dype_to_qwen will need.
+            # Make sure your function signature in patch_qwen.py matches this.
+            patched_model = apply_dype_to_qwen(model, width, height, method, enable_dype, dype_exponent)
+        
+        else:
+            raise TypeError(f"Unsupported model type for DyPE: '{model_class_name}'. This node currently supports 'FluxTransformer2DModel' and 'QwenImageTransformer2DModel'.")
+
         return io.NodeOutput(patched_model)
 
 class DyPEExtension(ComfyExtension):
-    """Registers the DyPE node."""
+    """Registers the Universal DyPE node."""
 
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
-        return [DyPE_FLUX]
+        return [DyPE_Universal]
 
 async def comfy_entrypoint() -> DyPEExtension:
     return DyPEExtension()
